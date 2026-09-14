@@ -5,6 +5,7 @@ setup.py
 
 # Ignore virtual environment directories
 venv/
+.venv/
 
 # Ignore editor/IDE configuration files
 .idea/
@@ -23,3 +24,18 @@ substack_html_pages/*
 
 # Ignore downloaded image assets
 substack_images/
+
+# Ignore editor/tooling state
+.claude/
+Session.vim
+tags
+
+# Ignore OS cruft
+.DS_Store
+
+# Ignore locally scraped output
+/posts/
+/caitlin-johnstone/
+/cory-doctorow-subprime-intelligence
+/*.md
+!README.md
