@@ -335,3 +335,71 @@ def test_clean_linked_images_preserves_youtube_thumbnail_links():
     )
 
     assert ss.clean_linked_images(md) == md
+
+
+# 12. URL filtering (posts whose slug contains a filtered word must survive)
+def test_filter_urls_keeps_posts_whose_slug_contains_filtered_words():
+    urls = [
+        "https://example.substack.com/p/arguments-about-ai-consciousness",
+        "https://example.substack.com/p/on-a-podcast-with-someone",
+        "https://example.substack.com/p/my-archive-of-links",
+    ]
+
+    assert ss.BaseSubstackScraper.filter_urls(urls) == urls
+
+
+def test_filter_urls_drops_non_post_pages():
+    urls = [
+        "https://example.substack.com/about",
+        "https://example.substack.com/archive",
+        "https://example.substack.com/podcast",
+        "https://example.substack.com/",
+        "https://example.substack.com/p/real-post",
+    ]
+
+    assert ss.BaseSubstackScraper.filter_urls(urls) == [
+        "https://example.substack.com/p/real-post"
+    ]
+
+
+# 13. Rate limiting (Substack returns a bare-text 429 body, no <pre> element)
+def _make_response(status_code: int, content: bytes):
+    response = Mock()
+    response.status_code = status_code
+    response.content = content
+    return response
+
+
+def test_get_url_soup_retries_on_bare_text_429(tmp_path, monkeypatch):
+    scraper = ss.SubstackScraper(
+        "https://example.substack.com/p/my-post",
+        str(tmp_path / "md"),
+        str(tmp_path / "html"),
+    )
+
+    responses = [
+        _make_response(429, b"Too Many Requests"),
+        _make_response(200, b"<html><body><h1>Post</h1></body></html>"),
+    ]
+    monkeypatch.setattr(ss, "sleep", lambda _seconds: None)
+    with patch("substack_scraper.requests.get", side_effect=responses) as mock_get:
+        soup = scraper.get_url_soup("https://example.substack.com/p/my-post")
+
+    assert mock_get.call_count == 2
+    assert soup.find("h1").text == "Post"
+
+
+def test_get_url_soup_raises_after_max_attempts_on_429(tmp_path, monkeypatch):
+    scraper = ss.SubstackScraper(
+        "https://example.substack.com/p/my-post",
+        str(tmp_path / "md"),
+        str(tmp_path / "html"),
+    )
+
+    monkeypatch.setattr(ss, "sleep", lambda _seconds: None)
+    with patch(
+        "substack_scraper.requests.get",
+        return_value=_make_response(429, b"Too Many Requests"),
+    ):
+        with pytest.raises(RuntimeError, match="Too many requests"):
+            scraper.get_url_soup("https://example.substack.com/p/my-post", max_attempts=3)

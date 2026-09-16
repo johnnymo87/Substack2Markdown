@@ -779,7 +779,6 @@ class BaseSubstackScraper(ABC):
         if self.is_single_post:
             self.post_urls: List[str] = [original_url]
         else:
-            self.keywords: List[str] = ["about", "archive", "podcast"]
             self.post_urls: List[str] = self.get_all_post_urls()
 
     def get_all_post_urls(self) -> List[str]:
@@ -787,7 +786,7 @@ class BaseSubstackScraper(ABC):
         urls = self.fetch_urls_from_sitemap()
         if not urls:
             urls = self.fetch_urls_from_feed()
-        return self.filter_urls(urls, self.keywords)
+        return self.filter_urls(urls)
 
     def fetch_urls_from_sitemap(self) -> List[str]:
         """Fetches URLs from sitemap.xml."""
@@ -822,9 +821,15 @@ class BaseSubstackScraper(ABC):
         return urls
 
     @staticmethod
-    def filter_urls(urls: List[str], keywords: List[str]) -> List[str]:
-        """Filters out URLs that contain certain keywords."""
-        return [url for url in urls if all(keyword not in url for keyword in keywords)]
+    def filter_urls(urls: List[str]) -> List[str]:
+        """Keeps only post URLs, dropping publication pages.
+
+        Every Substack post lives under /p/, so matching on that is both
+        sufficient and exact. An earlier substring blocklist ("about",
+        "archive", "podcast") also dropped genuine posts whose slug happened to
+        contain one of those words, e.g. /p/arguments-about-ai-consciousness.
+        """
+        return [url for url in urls if is_post_url(url)]
 
     @staticmethod
     def convert_youtube_embeds(html_content: str) -> str:
@@ -1174,19 +1179,30 @@ class SubstackScraper(BaseSubstackScraper):
             base_substack_url, md_save_dir, html_save_dir, download_images, frontmatter_format
         )
 
+    @staticmethod
+    def is_rate_limited(response: requests.Response) -> bool:
+        """Whether a response is Substack turning us away for rate limiting.
+
+        The status code is the reliable signal. Substack serves a bare-text
+        "Too Many Requests" body with no HTML structure, so an earlier check
+        that looked for that phrase inside a `body > pre` element never
+        matched, and rate-limited fetches were mistaken for posts whose
+        content could not be extracted.
+        """
+        if response.status_code == 429:
+            return True
+        return (
+            response.status_code >= 400
+            and b"too many requests" in response.content[:2048].lower()
+        )
+
     def get_url_soup(self, url: str, max_attempts: int = 5) -> Optional[BeautifulSoup]:
         """Gets soup from URL using requests, with retry on rate limiting."""
         for attempt in range(1, max_attempts + 1):
             try:
                 page = requests.get(url, headers=None)
-                soup = BeautifulSoup(page.content, "html.parser")
 
-                if soup.find("h2", class_="paywall-title"):
-                    print(f"Skipping premium article: {url}")
-                    return None
-
-                pre = soup.select_one("body > pre")
-                if pre and "too many requests" in pre.text.lower():
+                if self.is_rate_limited(page):
                     if attempt == max_attempts:
                         raise RuntimeError(f"Max attempts reached for URL: {url}. Too many requests.")
                     base = 2 ** attempt
@@ -1194,6 +1210,12 @@ class SubstackScraper(BaseSubstackScraper):
                     print(f"[{attempt}/{max_attempts}] Too many requests. Retrying in {delay:.2f} seconds...")
                     sleep(delay)
                     continue
+
+                soup = BeautifulSoup(page.content, "html.parser")
+
+                if soup.find("h2", class_="paywall-title"):
+                    print(f"Skipping premium article: {url}")
+                    return None
 
                 return soup
             except RuntimeError:
