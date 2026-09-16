@@ -1196,6 +1196,24 @@ class SubstackScraper(BaseSubstackScraper):
             and b"too many requests" in response.content[:2048].lower()
         )
 
+    @staticmethod
+    def retry_delay(response: requests.Response, attempt: int) -> float:
+        """How long to wait before retrying a rate-limited request.
+
+        Prefers the server's own Retry-After hint, since exponential backoff
+        from a one-second base tops out well short of a rate-limit window that
+        Substack may want measured in minutes. Falls back to jittered
+        exponential backoff when the header is absent or unparseable.
+        """
+        retry_after = response.headers.get("Retry-After") if response.headers else None
+        if retry_after:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass  # Retry-After may be an HTTP-date; fall back to backoff.
+        base = 2 ** attempt
+        return base + random.uniform(-0.2 * base, 0.2 * base)
+
     def get_url_soup(self, url: str, max_attempts: int = 5) -> Optional[BeautifulSoup]:
         """Gets soup from URL using requests, with retry on rate limiting."""
         for attempt in range(1, max_attempts + 1):
@@ -1205,8 +1223,7 @@ class SubstackScraper(BaseSubstackScraper):
                 if self.is_rate_limited(page):
                     if attempt == max_attempts:
                         raise RuntimeError(f"Max attempts reached for URL: {url}. Too many requests.")
-                    base = 2 ** attempt
-                    delay = base + random.uniform(-0.2 * base, 0.2 * base)
+                    delay = self.retry_delay(page, attempt)
                     print(f"[{attempt}/{max_attempts}] Too many requests. Retrying in {delay:.2f} seconds...")
                     sleep(delay)
                     continue

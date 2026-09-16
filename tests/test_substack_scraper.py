@@ -363,10 +363,11 @@ def test_filter_urls_drops_non_post_pages():
 
 
 # 13. Rate limiting (Substack returns a bare-text 429 body, no <pre> element)
-def _make_response(status_code: int, content: bytes):
-    response = Mock()
+def _make_response(status_code: int, content: bytes, headers=None):
+    response = Mock(spec=ss.requests.Response)
     response.status_code = status_code
     response.content = content
+    response.headers = headers or {}
     return response
 
 
@@ -403,3 +404,32 @@ def test_get_url_soup_raises_after_max_attempts_on_429(tmp_path, monkeypatch):
     ):
         with pytest.raises(RuntimeError, match="Too many requests"):
             scraper.get_url_soup("https://example.substack.com/p/my-post", max_attempts=3)
+
+
+def test_get_url_soup_honours_retry_after_header(tmp_path, monkeypatch):
+    scraper = ss.SubstackScraper(
+        "https://example.substack.com/p/my-post",
+        str(tmp_path / "md"),
+        str(tmp_path / "html"),
+    )
+
+    delays = []
+    monkeypatch.setattr(ss, "sleep", delays.append)
+    responses = [
+        _make_response(429, b"Too Many Requests", headers={"Retry-After": "45"}),
+        _make_response(200, b"<html><body><h1>Post</h1></body></html>"),
+    ]
+    with patch("substack_scraper.requests.get", side_effect=responses):
+        scraper.get_url_soup("https://example.substack.com/p/my-post")
+
+    assert delays == [45.0]
+
+
+def test_is_rate_limited_detects_phrase_on_other_error_statuses():
+    assert ss.SubstackScraper.is_rate_limited(_make_response(503, b"Too Many Requests"))
+
+
+def test_is_rate_limited_ignores_phrase_in_a_successful_page():
+    page = b"<html><body><p>This post is about too many requests.</p></body></html>"
+
+    assert ss.SubstackScraper.is_rate_limited(_make_response(200, page)) is False
